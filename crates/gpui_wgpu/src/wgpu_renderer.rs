@@ -1632,7 +1632,9 @@ impl WgpuRenderer {
         if range.is_empty() {
             return;
         }
-        let texture_info = self.atlas.get_texture_info(texture_id);
+        let Some(texture_info) = self.atlas.get_texture_info(texture_id) else {
+            return;
+        };
         let texture =
             self.create_texture_bind_group("atlas_texture_bind_group", &texture_info.view);
         pass.set_pipeline(pipeline);

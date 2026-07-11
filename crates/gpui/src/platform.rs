@@ -1400,7 +1400,7 @@ impl AtlasKey {
                 }
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
-            AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
+            AtlasKey::Image(_) => AtlasTextureKind::Image,
             AtlasKey::DynamicTexture(_) => AtlasTextureKind::Polychrome,
         }
     }
@@ -1669,6 +1669,8 @@ pub enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
     Subpixel = 2,
+    Image = 3,
+    ImageSmall = 4,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
