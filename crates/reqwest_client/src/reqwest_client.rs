@@ -56,11 +56,20 @@ impl ReqwestClient {
             .into()
     }
 
+    /// navop fork: this constructor is the "no application proxy" path that
+    /// navop's `AGENTS.md` relies on. `no_proxy()` keeps reqwest from probing
+    /// the system proxy configuration — on macOS that probe can panic inside
+    /// `system-configuration` — and the parsed agent is kept on the client so
+    /// `HttpClient::user_agent()` reports it. Upstream builds this client with
+    /// system-proxy detection left enabled.
     pub fn user_agent(agent: &str) -> anyhow::Result<Self> {
+        let user_agent = HeaderValue::from_str(agent)?;
         let mut map = HeaderMap::new();
-        map.insert(http::header::USER_AGENT, HeaderValue::from_str(agent)?);
-        let client = Self::builder(None).default_headers(map).build()?;
-        Ok(client.into())
+        map.insert(http::header::USER_AGENT, user_agent.clone());
+        let client = Self::builder(None).no_proxy().default_headers(map).build()?;
+        let mut client: ReqwestClient = client.into();
+        client.user_agent = Some(user_agent);
+        Ok(client)
     }
 
     pub fn proxy_and_user_agent(proxy: Option<Url>, user_agent: &str) -> anyhow::Result<Self> {
