@@ -817,6 +817,10 @@ impl WindowsWindowInner {
 
         if !activated {
             this.state.cursor_visible.store(true, Ordering::Relaxed);
+            // Losing the foreground makes the synthetic input we injected to take
+            // it stale: let the next activation request inject again rather than
+            // collapsing it into that older injection.
+            this.state.last_synthetic_activation.set(None);
         }
 
         // When the window is activated (gains focus), reset the modifier tracking state.

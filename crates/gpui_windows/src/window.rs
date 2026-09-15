@@ -32,6 +32,16 @@ use crate::direct_manipulation::DirectManipulationHandler;
 use crate::*;
 use gpui::*;
 
+/// How long a single synthetic `Alt` injection keeps serving further activation
+/// requests for the same window.
+///
+/// Hosts routinely activate the same window several times while starting up,
+/// and only the first of those calls needs the synthetic input described in
+/// [`WindowsWindow::activate`]: it already satisfied Windows' "the caller must
+/// own the most recent input event" rule, so a second injection milliseconds
+/// later buys nothing and is visible to every global keyboard hook.
+const SYNTHETIC_ACTIVATION_COOLDOWN: Duration = Duration::from_millis(500);
+
 pub(crate) struct WindowsWindow(pub Rc<WindowsWindowInner>);
 
 impl std::ops::Deref for WindowsWindow {
@@ -52,6 +62,10 @@ pub struct WindowsWindowState {
     pub background_appearance: Cell<WindowBackgroundAppearance>,
     pub scale_factor: Cell<f32>,
     pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
+    /// When this window last injected synthetic input in order to take the
+    /// foreground. Used to collapse repeated activation requests into a single
+    /// injection; see [`SYNTHETIC_ACTIVATION_COOLDOWN`].
+    pub(crate) last_synthetic_activation: Cell<Option<Instant>>,
 
     pub callbacks: Callbacks,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
@@ -165,6 +179,7 @@ impl WindowsWindowState {
             background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
             scale_factor: Cell::new(scale_factor),
             restore_from_minimized: Cell::new(restore_from_minimized),
+            last_synthetic_activation: Cell::new(None),
             min_size,
             callbacks,
             input_handler: Cell::new(input_handler),
@@ -811,6 +826,35 @@ impl PlatformWindow for WindowsWindow {
                     SetActiveWindow(hwnd).ok();
                     SetFocus(Some(hwnd)).ok();
                 }
+
+                // Nothing left to force: this window already owns the foreground.
+                // Bailing out here matters because hosts commonly activate the same
+                // window more than once in a row while starting up, and every extra
+                // call would otherwise inject another synthetic `Alt` pair below.
+                if unsafe { GetForegroundWindow() } == hwnd {
+                    return;
+                }
+
+                // The injection below only exists to make the *next* foreground
+                // attempt legal, so one injection already covers every activation
+                // request that arrives while it is still fresh. A repeated request
+                // still retries the foreground switch, it just does not inject a
+                // second time: a rapid double `Alt` is a real gesture for global
+                // launchers (uTools and friends), which then pop up on top of the
+                // window we were trying to bring forward.
+                let now = Instant::now();
+                if this
+                    .state
+                    .last_synthetic_activation
+                    .get()
+                    .is_some_and(|last| {
+                        now.saturating_duration_since(last) < SYNTHETIC_ACTIVATION_COOLDOWN
+                    })
+                {
+                    unsafe { SetForegroundWindow(hwnd).as_bool() };
+                    return;
+                }
+                this.state.last_synthetic_activation.set(Some(now));
 
                 // premium ragebait by windows, this is needed because the window
                 // must have received an input event to be able to set itself to foreground
