@@ -276,6 +276,18 @@ impl X11ClientStatePtr {
         if state.composing || state.ximc.is_none() {
             return;
         }
+        if state
+            .xim_handler
+            .as_ref()
+            .is_some_and(|handler| handler.im_id == 0 || handler.ic_id == 0)
+        {
+            // XIM handshake (Open/CreateIc) not finished yet. Sending a request
+            // with an invalid im_id/ic_id makes fcitx5 (xcb-imdkit) reply with a
+            // header-only XIM Error frame that xim-parser rejects, permanently
+            // disabling the XIM connection. The position will be updated again
+            // after the handshake completes.
+            return;
+        }
 
         let Some(mut ximc) = state.ximc.take() else {
             log::error!("bug: xim connection not set");
@@ -752,6 +764,17 @@ impl X11Client {
         let Some((mut ximc, xim_handler)) = state.take_xim() else {
             return;
         };
+        if xim_handler.im_id == 0 {
+            // XIM handshake (Open/OpenReply) not finished yet: im_id is still
+            // the invalid 0 and the ic attribute id map is still empty, so
+            // build_ic_attributes() silently drops every attribute. The
+            // resulting CreateIc(0, []) request makes fcitx5 (xcb-imdkit) reply
+            // with a header-only XIM Error frame, which xim-parser rejects
+            // (InvalidData ErrorCode: 0) and permanently disables XIM.
+            // enable_ime is re-invoked on the next FocusIn after the handshake.
+            state.restore_xim(ximc, xim_handler);
+            return;
+        }
         let mut ic_attributes = ximc
             .build_ic_attributes()
             .push(AttributeName::InputStyle, InputStyle::PREEDIT_CALLBACKS)
@@ -1506,27 +1529,35 @@ impl X11Client {
         drop(state);
         window.handle_ime_preedit(text);
 
-        if let Some(scaled_area) = window.get_ime_area() {
-            let ic_attributes = ximc
-                .build_ic_attributes()
-                .push(
-                    xim::AttributeName::InputStyle,
-                    xim::InputStyle::PREEDIT_CALLBACKS,
-                )
-                .push(xim::AttributeName::ClientWindow, xim_handler.window)
-                .push(xim::AttributeName::FocusWindow, xim_handler.window)
-                .nested_list(xim::AttributeName::PreeditAttributes, |b| {
-                    b.push(
-                        xim::AttributeName::SpotLocation,
-                        xim::Point {
-                            x: u32::from(scaled_area.origin.x + scaled_area.size.width) as i16,
-                            y: u32::from(scaled_area.origin.y + scaled_area.size.height) as i16,
-                        },
-                    );
-                })
-                .build();
-            ximc.set_ic_values(xim_handler.im_id, xim_handler.ic_id, ic_attributes)
-                .ok();
+        if xim_handler.im_id != 0 && xim_handler.ic_id != 0 {
+            // Guard: XIM handshake (Open/CreateIc) not finished yet. A
+            // SetIcValues request with an invalid im_id/ic_id makes fcitx5
+            // (xcb-imdkit) reply with a header-only XIM Error frame that
+            // xim-parser rejects, permanently disabling the XIM connection.
+            if let Some(scaled_area) = window.get_ime_area() {
+                let ic_attributes = ximc
+                    .build_ic_attributes()
+                    .push(
+                        xim::AttributeName::InputStyle,
+                        xim::InputStyle::PREEDIT_CALLBACKS,
+                    )
+                    .push(xim::AttributeName::ClientWindow, xim_handler.window)
+                    .push(xim::AttributeName::FocusWindow, xim_handler.window)
+                    .nested_list(xim::AttributeName::PreeditAttributes, |b| {
+                        b.push(
+                            xim::AttributeName::SpotLocation,
+                            xim::Point {
+                                x: u32::from(scaled_area.origin.x + scaled_area.size.width)
+                                    as i16,
+                                y: u32::from(scaled_area.origin.y + scaled_area.size.height)
+                                    as i16,
+                            },
+                        );
+                    })
+                    .build();
+                ximc.set_ic_values(xim_handler.im_id, xim_handler.ic_id, ic_attributes)
+                    .ok();
+            }
         }
         let mut state = self.0.borrow_mut();
         state.restore_xim(ximc, xim_handler);
