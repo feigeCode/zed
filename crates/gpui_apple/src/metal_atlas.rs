@@ -107,17 +107,17 @@ struct MetalAtlasState {
 impl PlatformAtlas for MetalAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
         let mut lock = self.0.lock();
-        if let Some(tile) = lock.tiles_by_key.get(key) {
+        if let Some(tile) = lock.tiles_by_key.get(&key) {
             Ok(Some(*tile))
         } else {
             let Some((size, bytes)) = build()? else {
                 return Ok(None);
             };
-            let tile = if matches!(key, AtlasKey::DynamicTexture(_)) {
+            let tile = if matches!(&key, AtlasKey::DynamicTexture(_)) {
                 lock.allocate_dedicated(size, key.texture_kind())
             } else {
                 lock.allocate(size, key.texture_kind())
@@ -125,7 +125,7 @@ impl PlatformAtlas for MetalAtlas {
             .context("failed to allocate")?;
             let texture = lock.texture(tile.texture_id);
             texture.upload(tile.bounds, &bytes);
-            lock.tiles_by_key.insert(key.clone(), tile);
+            lock.tiles_by_key.insert(key, tile);
             Ok(Some(tile))
         }
     }
@@ -584,7 +584,7 @@ mod tests {
 
     fn insert_tile(atlas: &MetalAtlas, key: &AtlasKey, size: Size<DevicePixels>) -> AtlasTile {
         atlas
-            .get_or_insert_with(key, &mut || {
+            .get_or_insert_with(key.clone(), &mut || {
                 let byte_count = (size.width.0 as usize) * (size.height.0 as usize) * 4;
                 Ok(Some((size, Cow::Owned(vec![0u8; byte_count]))))
             })

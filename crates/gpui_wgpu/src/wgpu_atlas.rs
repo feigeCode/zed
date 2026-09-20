@@ -126,25 +126,25 @@ impl WgpuAtlas {
 impl PlatformAtlas for WgpuAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &AtlasKey,
+        key: AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>> {
         let mut lock = self.0.lock();
-        if let Some(tile) = lock.tiles_by_key.get(key) {
+        if let Some(tile) = lock.tiles_by_key.get(&key) {
             Ok(Some(*tile))
         } else {
             profiling::scope!("new tile");
             let Some((size, bytes)) = build()? else {
                 return Ok(None);
             };
-            let tile = if matches!(key, AtlasKey::DynamicTexture(_)) {
+            let tile = if matches!(&key, AtlasKey::DynamicTexture(_)) {
                 lock.allocate_dedicated(size, key.texture_kind())
             } else {
                 lock.allocate(size, key.texture_kind())
             }
             .context("failed to allocate")?;
             lock.upload_texture(tile.texture_id, tile.bounds, &bytes);
-            lock.tiles_by_key.insert(key.clone(), tile);
+            lock.tiles_by_key.insert(key, tile);
             Ok(Some(tile))
         }
     }
@@ -670,7 +670,7 @@ mod tests {
 
         // Regression test: before the fix, this panicked in flush_uploads
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("tile should be created");
         atlas.remove(&key);
         atlas.before_frame();
@@ -700,7 +700,7 @@ mod tests {
         let insert = |key: &AtlasKey, size: Size<DevicePixels>| {
             let byte_count = (size.width.0 as usize) * (size.height.0 as usize) * 4;
             atlas
-                .get_or_insert_with(key, &mut || {
+                .get_or_insert_with(key.clone(), &mut || {
                     Ok(Some((size, Cow::Owned(vec![0u8; byte_count]))))
                 })
                 .expect("allocation should succeed")
@@ -751,10 +751,10 @@ mod tests {
         let mut first_build = || Ok(Some((size, Cow::Borrowed(bytes.as_slice()))));
         let mut second_build = || Ok(Some((size, Cow::Borrowed(bytes.as_slice()))));
         let first_tile = atlas
-            .get_or_insert_with(&first_key, &mut first_build)?
+            .get_or_insert_with(first_key.clone(), &mut first_build)?
             .expect("first dynamic texture should be allocated");
         let second_tile = atlas
-            .get_or_insert_with(&second_key, &mut second_build)?
+            .get_or_insert_with(second_key.clone(), &mut second_build)?
             .expect("second dynamic texture should be allocated");
 
         assert_ne!(first_tile.texture_id, second_tile.texture_id);
@@ -780,7 +780,7 @@ mod tests {
         let initial_bytes = vec![0; 2 * 2 * 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(initial_bytes.as_slice()))));
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
 
         let dirty_bytes = [0x10, 0x20, 0x30, 0x40, 0xAA, 0xBB, 0xCC, 0xDD];
@@ -808,7 +808,7 @@ mod tests {
         let bytes = vec![0; 2 * 2 * 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(bytes.as_slice()))));
         let tile = atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
 
         atlas.remove(&key);
@@ -832,7 +832,7 @@ mod tests {
         let bytes = vec![0; 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(bytes.as_slice()))));
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
 
         assert_eq!(atlas.resource_generation(), 0);
@@ -853,7 +853,7 @@ mod tests {
         let bytes = vec![0; 2 * 2 * 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(bytes.as_slice()))));
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
 
         let out_of_bounds = atlas.update(&key, texture_bounds(2, 0, 1, 1), &[0; 4]);
@@ -872,7 +872,7 @@ mod tests {
         let initial = vec![0u8; 4 * 4 * 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(initial.as_slice()))));
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
         atlas.before_frame();
 
@@ -898,7 +898,7 @@ mod tests {
         let initial = vec![0u8; 4 * 4 * 4];
         let mut build = || Ok(Some((size, Cow::Borrowed(initial.as_slice()))));
         atlas
-            .get_or_insert_with(&key, &mut build)?
+            .get_or_insert_with(key.clone(), &mut build)?
             .expect("dynamic texture should be allocated");
         atlas.before_frame();
 

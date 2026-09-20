@@ -1,12 +1,11 @@
 use crate::{
-    AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTile, Bounds, DevicePixels,
-    DispatchEventResult, GpuSpecs, Pixels, PlatformAtlas, PlatformDisplay,
+    AnyWindowHandle, AtlasKey, AtlasTile, AtlasTextureId, Bounds, DevicePixels,
+    DispatchEventResult, GpuSpecs, HeadlessAtlas, Pixels, PlatformAtlas, PlatformDisplay,
     PlatformHeadlessRenderer, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
     PromptButton, RequestFrameOptions, Scene, Size, TestPlatform, TextInputConfiguration,
     TextInputStateChange, TileId, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
     WindowControlArea, WindowInsets, WindowParams, WindowVisibility,
 };
-use collections::HashMap;
 use gpui_util::ResultExt as _;
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
@@ -14,6 +13,7 @@ use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::{
     cell::Cell,
+    collections::HashMap,
     path::PathBuf,
     rc::{Rc, Weak},
     sync::{self, Arc},
@@ -91,7 +91,7 @@ impl TestWindow {
     ) -> Self {
         let sprite_atlas: Arc<dyn PlatformAtlas> = match &renderer {
             Some(r) => r.sprite_atlas(),
-            None => Arc::new(TestAtlas::new()),
+            None => Arc::new(HeadlessAtlas::default()),
         };
         Self(Rc::new(Mutex::new(TestWindowState {
             bounds: params.bounds,
@@ -622,13 +622,13 @@ impl TestAtlas {
 impl PlatformAtlas for TestAtlas {
     fn get_or_insert_with<'a>(
         &self,
-        key: &crate::AtlasKey,
+        key: crate::AtlasKey,
         build: &mut dyn FnMut() -> anyhow::Result<
             Option<(Size<crate::DevicePixels>, std::borrow::Cow<'a, [u8]>)>,
         >,
     ) -> anyhow::Result<Option<crate::AtlasTile>> {
         let mut state = self.0.lock();
-        if let Some(&tile) = state.tiles.get(key) {
+        if let Some(&tile) = state.tiles.get(&key) {
             return Ok(Some(tile));
         }
         drop(state);
@@ -659,7 +659,7 @@ impl PlatformAtlas for TestAtlas {
             },
         );
 
-        Ok(Some(state.tiles[key]))
+        Ok(Some(state.tiles[&key]))
     }
 
     fn update(
@@ -711,7 +711,10 @@ mod dynamic_texture_tests {
             height: DevicePixels(3),
         };
         let mut build = || Ok(Some((texture_size, Cow::Owned(vec![0; 48]))));
-        let tile = atlas.get_or_insert_with(&key, &mut build).unwrap().unwrap();
+        let tile = atlas
+            .get_or_insert_with(key.clone(), &mut build)
+            .unwrap()
+            .unwrap();
         let update_bounds = Bounds {
             origin: Point {
                 x: DevicePixels(1),
