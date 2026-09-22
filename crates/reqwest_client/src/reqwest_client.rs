@@ -25,6 +25,16 @@ pub struct ReqwestClient {
     handle: tokio::runtime::Handle,
 }
 
+/// Which proxy policy a freshly built application client follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProxyMode {
+    /// Follow the OS system proxy and the `ALL_PROXY`/`HTTP_PROXY`/
+    /// `HTTPS_PROXY` environment variables, like every other app on the machine.
+    FollowSystem,
+    /// Ignore every proxy source and connect directly.
+    Direct,
+}
+
 impl ReqwestClient {
     /// Shared connection-management configuration for every client this type
     /// builds. `read_timeout` sets an idle timeout on each body read (see
@@ -56,17 +66,40 @@ impl ReqwestClient {
             .into()
     }
 
-    /// navop fork: this constructor is the "no application proxy" path that
-    /// navop's `AGENTS.md` relies on. `no_proxy()` keeps reqwest from probing
-    /// the system proxy configuration — on macOS that probe can panic inside
-    /// `system-configuration` — and the parsed agent is kept on the client so
-    /// `HttpClient::user_agent()` reports it. Upstream builds this client with
-    /// system-proxy detection left enabled.
+    /// The default application client. It follows the machine's proxy
+    /// configuration — the OS system proxy *and* the `ALL_PROXY`/`HTTP_PROXY`/
+    /// `HTTPS_PROXY` environment variables — the same way every other app on the
+    /// machine does, so a user whose network only reaches the internet through a
+    /// proxy can log in without first teaching the app that proxy by hand.
+    ///
+    /// navop fork: the fork used to force `no_proxy()` here in order to skip
+    /// reqwest's macOS `system-configuration` probe, which can panic in test
+    /// processes. That traded away the user's proxy for one process-local
+    /// hazard, so the app-facing default is proxy-aware again (as upstream
+    /// builds it). [`ReqwestClient::user_agent_direct`] keeps the probe-free
+    /// variant for callers that must not consult the OS proxy configuration.
     pub fn user_agent(agent: &str) -> anyhow::Result<Self> {
+        Self::user_agent_with(agent, ProxyMode::FollowSystem)
+    }
+
+    /// The explicit "no proxy at all" variant of [`ReqwestClient::user_agent`].
+    /// Building this client never touches the OS proxy configuration, which
+    /// keeps reqwest's macOS `system-configuration` probe (a known NULL-object
+    /// panic source in test processes) out of the path.
+    pub fn user_agent_direct(agent: &str) -> anyhow::Result<Self> {
+        Self::user_agent_with(agent, ProxyMode::Direct)
+    }
+
+    fn user_agent_with(agent: &str, proxy_mode: ProxyMode) -> anyhow::Result<Self> {
         let user_agent = HeaderValue::from_str(agent)?;
         let mut map = HeaderMap::new();
         map.insert(http::header::USER_AGENT, user_agent.clone());
-        let client = Self::builder(None).no_proxy().default_headers(map).build()?;
+        let builder = Self::builder(None);
+        let builder = match proxy_mode {
+            ProxyMode::FollowSystem => builder,
+            ProxyMode::Direct => builder.no_proxy(),
+        };
+        let client = builder.default_headers(map).build()?;
         let mut client: ReqwestClient = client.into();
         client.user_agent = Some(user_agent);
         Ok(client)
@@ -509,5 +542,91 @@ mod tests {
             client.proxy.is_none(),
             "An invalid proxy URL should add no proxy to the client!"
         )
+    }
+
+    /// Regression test for the fork's default proxy policy: the application
+    /// client must consult the machine's proxy configuration, while
+    /// `user_agent_direct` must stay proxy-free.
+    ///
+    /// reqwest reads the `*_PROXY` environment variables through the same
+    /// `Proxy::system()` path as the OS settings, and it prefers them whenever
+    /// any of them is set — so pointing `HTTPS_PROXY` at a throwaway local
+    /// listener makes the assertion independent of the machine's own proxy
+    /// configuration. The target host is under `.invalid`, so neither half can
+    /// reach the network: the only thing that can produce a connection is the
+    /// proxy lookup we are testing.
+    #[test]
+    fn test_application_client_follows_proxy_configuration_unless_built_direct() {
+        struct EnvGuard {
+            key: &'static str,
+            previous: Option<std::ffi::OsString>,
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                // SAFETY: see the note where the variable is set below.
+                unsafe {
+                    match &self.previous {
+                        Some(value) => std::env::set_var(self.key, value),
+                        None => std::env::remove_var(self.key),
+                    }
+                }
+            }
+        }
+
+        const PROXY_ENV: &str = "HTTPS_PROXY";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let guard = EnvGuard {
+            key: PROXY_ENV,
+            previous: std::env::var_os(PROXY_ENV),
+        };
+        // SAFETY: `set_var` became unsafe in edition 2024 because another
+        // thread could read the environment concurrently. This is the only
+        // test in this binary that issues an `https://` request, and it only
+        // writes `HTTPS_PROXY`, so a parallel test cannot observe the value.
+        unsafe { std::env::set_var(PROXY_ENV, format!("http://{proxy_address}")) };
+
+        let (recorded_tx, recorded_rx) = std::sync::mpsc::channel::<String>();
+        let proxy = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            let _ = reader.read_line(&mut request_line);
+            let _ = recorded_tx.send(request_line);
+            let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n");
+        });
+
+        let request = || {
+            HttpRequest::get("https://proxy-policy-probe.invalid/")
+                .body(AsyncBody::default())
+                .unwrap()
+        };
+
+        // A client built with `user_agent_direct` must not appear at the proxy
+        // at all: it resolves the (nonexistent) host on its own.
+        let direct = ReqwestClient::user_agent_direct("test/direct").unwrap();
+        assert!(futures::executor::block_on(direct.send(request())).is_err());
+        assert_eq!(
+            recorded_rx.recv_timeout(Duration::from_millis(300)).ok(),
+            None,
+            "the direct client must not consult the proxy configuration"
+        );
+
+        // The default client must hand the request to the proxy.
+        let default = ReqwestClient::user_agent("test/default").unwrap();
+        assert!(futures::executor::block_on(default.send(request())).is_err());
+        let request_line = recorded_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the default client must route through the configured proxy");
+        assert!(
+            request_line.contains("proxy-policy-probe.invalid"),
+            "unexpected request line at the proxy: {request_line:?}"
+        );
+
+        proxy.join().unwrap();
+        drop(guard);
     }
 }
