@@ -153,7 +153,7 @@ impl PlatformAtlas for DirectXAtlas {
         };
         let texture = lock
             .texture(tile.texture_id)
-            .context("texture missing")?;
+            .ok_or_else(|| anyhow::anyhow!("texture missing"))?;
         validate_upload(tile, bounds, bytes, texture.bytes_per_pixel)?;
         let upload_bounds = Bounds {
             origin: Point {
@@ -307,6 +307,12 @@ impl DirectXAtlasState {
         const MAX_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(16384),
             height: DevicePixels(16384),
+        };
+        let default_size = match kind {
+            AtlasTextureKind::Polychrome | AtlasTextureKind::Image | AtlasTextureKind::ImageSmall => {
+                DEFAULT_COLOR_ATLAS_SIZE
+            }
+            AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => DEFAULT_ATLAS_SIZE,
         };
         let size = min_size.min(&MAX_ATLAS_SIZE).max(&default_size);
         self.push_texture_with_size(size, kind)
