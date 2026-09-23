@@ -1372,6 +1372,24 @@ impl MacWindow {
     }
 }
 
+/// How long the native window is kept alive after `-close`, so that AppKit's
+/// own teardown of the window always runs while it is still allocated.
+///
+/// The Touch Bar infrastructure (`_NSTouchBarFinder`) observes every window and
+/// its responders through KVO, and only retracts those observations from a
+/// display-cycle observer block (`_NSTouchBarFinderSetNeedsUpdateOnMain` →
+/// `NSDisplayCycleFlush`), i.e. no earlier than the next display cycle.
+/// Releasing our last reference in the same turn as `-close` lets the window
+/// deallocate first; `-[_NSTouchBarFinderObservation invalidate]` then throws
+/// from `removeObserver:forKeyPath:context:`, nothing catches it, and the
+/// process is terminated (SIGABRT, or SIGILL via `_crashOnException:`). Only
+/// Touch Bar Macs run that path, which is why this race is invisible on the
+/// machines we develop on.
+///
+/// This comfortably exceeds one display cycle (17ms at 60Hz, 8ms at 120Hz)
+/// while barely delaying the reclaim of an already closed window.
+const WINDOW_TEARDOWN_GRACE_PERIOD: Duration = Duration::from_millis(100);
+
 impl Drop for MacWindow {
     fn drop(&mut self) {
         let mut this = self.0.lock();
@@ -1395,6 +1413,15 @@ impl Drop for MacWindow {
         // A delivery task queued by `report_visibility` may still run after the
         // GPUI window is gone; without a callback it has nothing to notify.
         this.visibility_callback.take();
+        // `close()` does not release the window (`setReleasedWhenClosed: NO` is
+        // set at creation), so the `autorelease()` below is the single release
+        // of the reference handed back by `alloc`/`initWithContentRect…`. Split
+        // it from `close()` by a display cycle: AppKit retracts its own
+        // observations of the window lazily, and doing that against a
+        // deallocated window aborts the process (see
+        // `WINDOW_TEARDOWN_GRACE_PERIOD`). `background_executor.timer` resumes
+        // this task on the main thread, so the release still happens there.
+        let background_executor = this.background_executor.clone();
         this.foreground_executor
             .spawn(async move {
                 unsafe {
@@ -1402,8 +1429,11 @@ impl Drop for MacWindow {
                         let _: () = msg_send![parent, endSheet: window];
                     }
                     window.close();
-                    window.autorelease();
                 }
+                background_executor
+                    .timer(WINDOW_TEARDOWN_GRACE_PERIOD)
+                    .await;
+                unsafe { window.autorelease() };
             })
             .detach();
     }
