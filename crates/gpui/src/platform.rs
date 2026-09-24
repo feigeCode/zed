@@ -1494,6 +1494,17 @@ impl<Backend> AtlasState<Backend> {
         self.tiles_by_key.contains_key(key)
     }
 
+    /// Returns the tile stored for `key`, if any, without inserting.
+    pub fn tile_for(&self, key: &AtlasKey) -> Option<&AtlasTile> {
+        self.tiles_by_key.get(key)
+    }
+
+    /// Stores a tile the backend inserted outside `get_or_insert_with`
+    /// (dedicated dynamic-texture allocations) under `key`.
+    pub fn insert_tile(&mut self, key: AtlasKey, tile: AtlasTile) {
+        self.tiles_by_key.insert(key, tile);
+    }
+
     pub fn clear(&mut self, reset_backend: impl FnOnce(&mut Backend)) {
         self.tiles_by_key.clear();
         reset_backend(&mut self.backend);
