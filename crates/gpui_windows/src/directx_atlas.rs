@@ -25,6 +25,8 @@ struct DirectXAtlasTextures {
     max_texture_size: i32,
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
+    image_textures: AtlasTextureList<DirectXAtlasTexture>,
+    image_small_textures: AtlasTextureList<DirectXAtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectXAtlasTexture>,
 }
 
@@ -77,6 +79,8 @@ impl DirectXAtlas {
             }),
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
+            image_textures: Default::default(),
+            image_small_textures: Default::default(),
             subpixel_textures: Default::default(),
         })))
     }
@@ -109,6 +113,8 @@ impl DirectXAtlas {
             textures.resource_generation.advance();
             textures.monochrome_textures = AtlasTextureList::default();
             textures.polychrome_textures = AtlasTextureList::default();
+            textures.image_textures = AtlasTextureList::default();
+            textures.image_small_textures = AtlasTextureList::default();
             textures.subpixel_textures = AtlasTextureList::default();
         });
     }
@@ -230,6 +236,8 @@ impl AtlasBackend for DirectXAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::Image => &mut self.image_textures,
+            AtlasTextureKind::ImageSmall => &mut self.image_small_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
         };
 
@@ -269,10 +277,23 @@ impl DirectXAtlasTextures {
         size: Size<DevicePixels>,
         texture_kind: AtlasTextureKind,
     ) -> Option<AtlasTile> {
+        // Small images go to their own texture pages so a large render does not
+        // evict a whole shared page of icons.
+        const SMALL_IMAGE_TILE_MAX: i32 = 256;
+        let texture_kind = if texture_kind == AtlasTextureKind::Image
+            && size.width.0 <= SMALL_IMAGE_TILE_MAX
+            && size.height.0 <= SMALL_IMAGE_TILE_MAX
+        {
+            AtlasTextureKind::ImageSmall
+        } else {
+            texture_kind
+        };
         {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+                AtlasTextureKind::Image => &mut self.image_textures,
+                AtlasTextureKind::ImageSmall => &mut self.image_small_textures,
                 AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
             };
 
@@ -298,13 +319,25 @@ impl DirectXAtlasTextures {
             width: DevicePixels(1024),
             height: DevicePixels(1024),
         };
+        // Color textures start smaller: image tiles are sparse and a 1024px
+        // first page wastes memory for icon-heavy but text-light surfaces.
+        const DEFAULT_COLOR_ATLAS_SIZE: Size<DevicePixels> = Size {
+            width: DevicePixels(512),
+            height: DevicePixels(512),
+        };
+        let default_size = match kind {
+            AtlasTextureKind::Polychrome
+            | AtlasTextureKind::Image
+            | AtlasTextureKind::ImageSmall => DEFAULT_COLOR_ATLAS_SIZE,
+            AtlasTextureKind::Monochrome | AtlasTextureKind::Subpixel => DEFAULT_ATLAS_SIZE,
+        };
         // Max texture size for DirectX. See:
         // https://learn.microsoft.com/en-us/windows/win32/direct3d11/overviews-direct3d-11-resources-limits
         const MAX_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(16384),
             height: DevicePixels(16384),
         };
-        let size = min_size.min(&MAX_ATLAS_SIZE).max(&DEFAULT_ATLAS_SIZE);
+        let size = min_size.min(&MAX_ATLAS_SIZE).max(&default_size);
         self.push_texture_with_size(size, kind)
     }
 
@@ -325,7 +358,9 @@ impl DirectXAtlasTextures {
                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
                 bytes_per_pixel = 1;
             }
-            AtlasTextureKind::Polychrome => {
+            AtlasTextureKind::Polychrome
+            | AtlasTextureKind::Image
+            | AtlasTextureKind::ImageSmall => {
                 pixel_format = DXGI_FORMAT_B8G8R8A8_UNORM;
                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
                 bytes_per_pixel = 4;
@@ -364,6 +399,8 @@ impl DirectXAtlasTextures {
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::Image => &mut self.image_textures,
+            AtlasTextureKind::ImageSmall => &mut self.image_small_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
         };
         let index = texture_list.free_list.pop();
@@ -398,6 +435,8 @@ impl DirectXAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &self.monochrome_textures,
             AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::Image => &self.image_textures,
+            AtlasTextureKind::ImageSmall => &self.image_small_textures,
             AtlasTextureKind::Subpixel => &self.subpixel_textures,
         };
         textures.textures.get(id.index as usize)?.as_ref()
@@ -589,26 +628,20 @@ mod tests {
             return;
         };
 
-        let small = Size {
-            width: DevicePixels(64),
-            height: DevicePixels(64),
-        };
         let big = Size {
             width: DevicePixels(700),
             height: DevicePixels(700),
         };
 
-        let keeper_key = make_image_key(1);
         let big_key_a = make_image_key(2);
         let big_key_b = make_image_key(3);
 
-        let keeper_tile = insert_tile(&atlas, keeper_key, small);
         let tile_a = insert_tile(&atlas, big_key_a.clone(), big);
-        assert_eq!(keeper_tile.texture_id, tile_a.texture_id);
+        assert_eq!(tile_a.texture_id.kind, AtlasTextureKind::Image);
 
         atlas.remove(&big_key_a);
 
         let tile_b = insert_tile(&atlas, big_key_b, big);
-        assert_eq!(tile_b.texture_id, keeper_tile.texture_id);
+        assert_eq!(tile_b.texture_id, tile_a.texture_id);
     }
 }

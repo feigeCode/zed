@@ -1400,7 +1400,7 @@ impl AtlasKey {
                 }
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
-            AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
+            AtlasKey::Image(_) => AtlasTextureKind::Image,
             AtlasKey::DynamicTexture(_) => AtlasTextureKind::Polychrome,
         }
     }
@@ -1680,6 +1680,13 @@ pub enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
     Subpixel = 2,
+    /// Fork: images get their own texture pages, separate from glyph and
+    /// dynamic-texture polychrome pages, so dropping many images frees whole
+    /// pages instead of fragmenting shared ones.
+    Image = 3,
+    /// Fork: images whose tile fits within 256px go to small pages, keeping
+    /// icons from fragmenting the large-image pages.
+    ImageSmall = 4,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
