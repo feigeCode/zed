@@ -29,11 +29,15 @@ const MAX_PENDING_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 pub struct MetalAtlas(Mutex<AtlasState<MetalAtlasTextures>>);
 
 impl MetalAtlas {
-    pub(crate) fn new(device: Device, is_apple_gpu: bool, command_queue: CommandQueue) -> Self {
+    pub(crate) fn new(
+        device: Device,
+        supports_shared_storage: bool,
+        command_queue: CommandQueue,
+    ) -> Self {
         MetalAtlas(Mutex::new(AtlasState::new(MetalAtlasTextures {
             device: AssertSend(device),
             command_queue: AssertSend(command_queue),
-            is_apple_gpu,
+            supports_shared_storage,
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             image_textures: Default::default(),
@@ -92,7 +96,7 @@ struct PendingUpload {
 struct MetalAtlasTextures {
     device: AssertSend<Device>,
     command_queue: AssertSend<CommandQueue>,
-    is_apple_gpu: bool,
+    supports_shared_storage: bool,
     monochrome_textures: AtlasTextureList<MetalAtlasTexture>,
     polychrome_textures: AtlasTextureList<MetalAtlasTexture>,
     image_textures: AtlasTextureList<MetalAtlasTexture>,
@@ -355,7 +359,7 @@ impl MetalAtlasTextures {
         texture_descriptor.set_usage(usage);
         // Shared memory mode can be used only on Apple GPU families
         // https://developer.apple.com/documentation/metal/mtlresourceoptions/storagemodeshared
-        texture_descriptor.set_storage_mode(if self.is_apple_gpu {
+        texture_descriptor.set_storage_mode(if self.supports_shared_storage {
             metal::MTLStorageMode::Shared
         } else {
             metal::MTLStorageMode::Managed

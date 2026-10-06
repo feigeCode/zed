@@ -68,6 +68,7 @@ pub struct WindowsWindowState {
     pub(crate) last_synthetic_activation: Cell<Option<Instant>>,
 
     pub callbacks: Callbacks,
+    pub frame_signal: Arc<PlatformFrameSignal>,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
     pub ime_enabled: Cell<bool>,
     pub pending_surrogate: Cell<Option<u16>>,
@@ -183,6 +184,7 @@ impl WindowsWindowState {
             last_synthetic_activation: Cell::new(None),
             min_size,
             callbacks,
+            frame_signal: Arc::new(PlatformFrameSignal::new()),
             input_handler: Cell::new(input_handler),
             ime_enabled: Cell::new(true),
             pending_surrogate: Cell::new(pending_surrogate),
