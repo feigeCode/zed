@@ -2465,15 +2465,26 @@ impl PlatformWindow for WaylandWindow {
             return;
         };
 
-        if composition.renderers_need_recreation && !state.renderer.device_lost() {
+        if composition.renderers_need_recreation
+            && state
+                .renderer
+                .as_ref()
+                .is_some_and(|renderer| !renderer.device_lost())
+        {
             composition.renderers_need_recreation = false;
             let size = composition.size;
             let mut failed = false;
             for surface in composition.gpui_surfaces.values_mut() {
                 let renderer = surface.raw_window().and_then(|raw_window| {
-                    state
+                    // The renderer is only taken when the window is dropped.
+                    let main_renderer = state
                         .renderer
-                        .new_sharing_atlas(&raw_window, WaylandGpuiSurface::surface_config(size))
+                        .as_ref()
+                        .context("the Wayland window renderer is gone")?;
+                    main_renderer.new_sharing_atlas(
+                        &raw_window,
+                        WaylandGpuiSurface::surface_config(size),
+                    )
                 });
                 match renderer {
                     Ok(renderer) => surface.renderer = renderer,
@@ -2607,7 +2618,12 @@ impl PlatformWindow for WaylandWindow {
                     .display_ptr()
                     .cast::<c_void>(),
             };
-            let renderer = match state.renderer.new_sharing_atlas(
+            let Some(main_renderer) = state.renderer.as_ref() else {
+                // Only reachable while the window is being dropped.
+                subsurface.destroy();
+                return Err(anyhow::anyhow!("the Wayland window renderer is gone"));
+            };
+            let renderer = match main_renderer.new_sharing_atlas(
                 &raw_window,
                 WaylandGpuiSurface::surface_config(composition.size),
             ) {
