@@ -51,6 +51,12 @@ pub unsafe fn new_renderer(
     MetalRenderer::new(context, transparent)
 }
 
+/// Creates a renderer for the composition overlay layer. It shares the base
+/// renderer's sprite atlas so both layers resolve the same texture ids.
+pub fn new_overlay_renderer(context: self::Context, base: &Renderer) -> Renderer {
+    base.new_sharing_atlas(context, true)
+}
+
 pub struct InstanceBufferPool {
     buffer_size: usize,
     buffers: Vec<metal::Buffer>,
@@ -151,7 +157,7 @@ impl MetalRenderer {
         let device = Self::create_device();
         let layer = metal::MetalLayer::new();
         Self::configure_layer(&layer, &device, transparent);
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool, None)
     }
 
     /// Creates a renderer for a CAMetalLayer owned by a platform view, such as
@@ -170,7 +176,7 @@ impl MetalRenderer {
         }
         .to_owned();
         Self::configure_layer(&layer, &device, transparent);
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool, None)
     }
 
     fn configure_layer(layer: &metal::MetalLayerRef, device: &metal::DeviceRef, transparent: bool) {
@@ -199,6 +205,25 @@ impl MetalRenderer {
         );
     }
 
+    /// Creates a renderer for a composition overlay layer that reuses `self`'s
+    /// sprite atlas, so both layers resolve the same texture ids.
+    fn new_sharing_atlas(
+        &self,
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        transparent: bool,
+    ) -> Self {
+        let device = self.device.clone();
+        let layer = metal::MetalLayer::new();
+        Self::configure_layer(&layer, &device, transparent);
+        Self::new_internal(
+            device,
+            Some(layer),
+            !transparent,
+            instance_buffer_pool,
+            Some(self.sprite_atlas.clone()),
+        )
+    }
+
     /// Creates a new headless MetalRenderer for offscreen rendering without a window.
     ///
     /// This renderer can render scenes to images without requiring a CAMetalLayer,
@@ -206,7 +231,7 @@ impl MetalRenderer {
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     pub fn new_headless(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>) -> Self {
         let device = Self::create_device();
-        Self::new_internal(device, None, true, instance_buffer_pool)
+        Self::new_internal(device, None, true, instance_buffer_pool, None)
     }
 
     #[cfg(target_os = "macos")]
@@ -246,6 +271,7 @@ impl MetalRenderer {
         layer: Option<metal::MetalLayer>,
         opaque: bool,
         instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        shared_sprite_atlas: Option<Arc<MetalAtlas>>,
     ) -> Self {
         #[cfg(feature = "runtime_shaders")]
         let library = device
@@ -361,11 +387,13 @@ impl MetalRenderer {
 
         let command_queue = device.new_command_queue();
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
-        let sprite_atlas = Arc::new(MetalAtlas::new(
-            device.clone(),
-            supports_shared_storage,
-            command_queue.clone(),
-        ));
+        let sprite_atlas = shared_sprite_atlas.unwrap_or_else(|| {
+            Arc::new(MetalAtlas::new(
+                device.clone(),
+                supports_shared_storage,
+                command_queue.clone(),
+            ))
+        });
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 

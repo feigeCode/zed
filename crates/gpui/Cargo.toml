@@ -152,11 +152,26 @@ libc.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectComposition",
     "Win32_System_Power",
     "Win32_System_RemoteDesktop",
     "Win32_System_WindowsProgramming",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# `examples/native_webview.rs` drives WKWebView through the legacy Objective-C
+# crates, matching how zed still binds AppKit in `gpui_macos`; gpui itself only
+# depends on objc2, so the example needs these declared explicitly.
+cocoa.workspace = true
+objc.workspace = true
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+webview2-com = "0.38"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dev-dependencies]
+wgpu.workspace = true
 
 [dev-dependencies]
 backtrace.workspace = true
@@ -197,6 +212,10 @@ ignored-paths = ["src/_ownership_and_data_flow.rs"]
 [[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
+
+[[example]]
+name = "native_webview"
+path = "examples/native_webview.rs"
 
 [[example]]
 name = "move_entity_between_windows"
